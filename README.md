@@ -34,7 +34,7 @@ See https://developer.anthology.com/portal/displayApi
 The integration user needs a system role with the following privliges:
 
 - Administrator Panel (Users) > Users > Edit > View Course Enrollments- 
-- Course/Organization Control Panel (Tools) > Attendance > View Attendce
+- Course/Organization Control Panel (Tools) > Attendance > View Attendance
 - Administrator Panel (Users) > Users
   (Dev documentation missing note for membership endpoint. Need this to get user.externalId)
 
