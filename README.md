@@ -37,6 +37,7 @@ The integration user needs a system role with the following permitted privliges 
 - Administrator Panel (Courses) > Courses [system.course.VIEW]
 - Course/Organization Control Panel (Tools) > Attendance > View Attendance [course.attendance.VIEW]
 - Course/Organization Control Panel (Customization) > Properties [course.configure-properties.EXECUTE]
+- Administrator Panel (Courses) > Courses > Edit > Enrollments [system.courseuserlist.VIEW]
 
 The code includes classes and methods to
 
