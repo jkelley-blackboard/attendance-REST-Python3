@@ -24,19 +24,19 @@ I have included a Setup.cmd file which installs them on windows using PIP
 
 The code uses the following Blackboard endpoints:
 See https://developer.anthology.com/portal/displayApi 
-- GET /learn/api/public/v1/oauth2/token
-- GET /learn/api/public/v1/users/_1_1 **only to check rate values
-- GET /learn/api/public/v3/courses/{courseId}  ***not yet
+- POST /learn/api/public/v1/oauth2/token
+- GET /learn/api/public/v3/courses/{courseId}
 - GET /learn/api/public/v1/courses/{courseId}/users
 - GET /learn/api/public/v1/courses/{courseId}/meetings
 - GET /learn/api/public/v1/courses/{courseId}/meetings/{meetingId]/users
 
-The integration user needs a system role with the following privliges:
+The integration user needs a system role with the following permitted privliges [entitlments]:
 
-- Administrator Panel (Users) > Users > Edit > View Course Enrollments- 
-- Course/Organization Control Panel (Tools) > Attendance > View Attendance
-- Administrator Panel (Users) > Users
-  (Dev documentation missing note for membership endpoint. Need this to get user.externalId)
+	
+- User management by Web Services [system.useradmin.generic.VIEW]
+- Administrator Panel (Courses) > Courses [system.course.VIEW]
+- Course/Organization Control Panel (Tools) > Attendance > View Attendance [course.attendance.VIEW]
+- Course/Organization Control Panel (Customization) > Properties [course.configure-properties.EXECUTE]
 
 The code includes classes and methods to
 
