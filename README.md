@@ -13,15 +13,6 @@ header = [
     'childCourseId', 'childCourseName', 'childExtKey','child_pk1'
 ]
 
-The code uses the following non-standard Python Modules
-I have included a Setup.cmd file which installs them on windows using PIP
-- datetime
-- argparse
-- configparser
-- logging
-- requests
-- typing
-
 The code uses the following Blackboard endpoints:
 See https://developer.anthology.com/portal/displayApi 
 - POST /learn/api/public/v1/oauth2/token
@@ -31,7 +22,6 @@ See https://developer.anthology.com/portal/displayApi
 - GET /learn/api/public/v1/courses/{courseId}/meetings/{meetingId]/users
 
 The integration user needs a system role with the following permitted privliges [entitlments]:
-
 	
 - User management by Web Services [system.useradmin.generic.VIEW]
 - Administrator Panel (Courses) > Courses [system.course.VIEW]
@@ -44,3 +34,17 @@ The code includes classes and methods to
 - authenticate and reauthenticate when the session is expired or is about to timeout
 - lookup rate limit, remaining requests and how many were used by the module
 - log to console and file with error, info and debug levels
+- for a course, get the student memberships and child course info if merged
+- for a course, get all the attendance meetings
+- get the attendance record for each student/meeting pair
+- combine the data with attendance status 'Null' where a meeting exists but the student doesn't have record
+
+The code uses the following non-standard Python Modules
+I have included a Setup.cmd file which installs them on windows using PIP
+
+- datetime
+- argparse
+- configparser
+- logging
+- requests
+- typing
