@@ -40,7 +40,6 @@ The integration user needs a system role with the following privliges:
 
 The code includes classes and methods to
 
-- authenticate
-- reauthenticate when the session is about to timeout
+- authenticate and reauthenticate when the session is expired or is about to timeout
 - lookup rate limit, remaining requests and how many were used by the module
 - log to console and file with error, info and debug levels
