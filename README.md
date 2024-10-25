@@ -6,7 +6,12 @@ usage = batch_attendance3.py properties_file.ini list_of_courses.csv
 The outputs are a log file and a csv of attendance records with a timestamp.
 The expected data fields are:
 
-<i>courseId|course_pk1|meeting_id|meeting_start|meeting_end|status|user_pk1|username|external_user_key|student_id</i>
+header = [
+    'courseId', 'courseName', 'courseExtKey', 'course_pk1',
+    'meeting_id', 'meeting_start', 'meeting_end', 'status',
+    'user_pk1', 'username', 'external_user_key', 'student_id', 'firstname', 'lastname',
+    'childCourseId', 'childCourseName', 'childExtKey','child_pk1'
+]
 
 The code uses the following non-standard Python Modules
 I have included a Setup.cmd file which installs them on windows using PIP
