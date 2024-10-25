@@ -18,7 +18,10 @@ Itterate through the list of cousres
 
 TODO:
  - make other course attributes (external key) and user attributes (first, last) available
+   - course attributes require addtional requests
+   - get user attributes from expanded membership requests
  - handle a course with dates and no attendance records at all
+ - handle merged courses
 
 """
 
@@ -31,7 +34,9 @@ import argparse
 import configparser
 import logging
 import requests
+import re
 from typing import List
+from functools import wraps
 
 #########################
 def parse_arguments_and_config():
@@ -53,6 +58,7 @@ def parse_arguments_and_config():
         SECRET = config.get('properties', 'SECRET')
         HOST = 'https://' + config.get('properties', 'HOST')
         RESULTLIMIT = int(config.get('properties', 'RESULTLIMIT'))
+        SESSIONBUFFER = int(config.get('properties', 'SESSIONBUFFER'))
 
         if (' ' in [KEY, SECRET, HOST, RESULTLIMIT]) or (len(SECRET) < 32) \
                 or (RESULTLIMIT < 1 or RESULTLIMIT > 100) or ('https' not in HOST):
@@ -67,7 +73,8 @@ def parse_arguments_and_config():
         'KEY': KEY,
         'SECRET': SECRET,
         'HOST': HOST,
-        'RESULTLIMIT': RESULTLIMIT
+        'RESULTLIMIT': RESULTLIMIT,
+        'SESSIONBUFFER':SESSIONBUFFER
     }
 
 #########################
@@ -86,18 +93,19 @@ def setup_logging(batchId):
     console_handler.setLevel(logging.INFO)
 
     # Create a formatter and set it for both handlers
-    formatter = logging.Formatter('[%(asctime)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    formatter = logging.Formatter('[%(asctime)s]|%(levelname)s|%(message)s', datefmt='%Y-%m-%d %H:%M:%S')
     file_handler.setFormatter(formatter)
     console_handler.setFormatter(formatter)
 
-    # Add the handlers to the logger
-    logger.addHandler(file_handler)
-    logger.addHandler(console_handler)  
+    # Add the handlers to the logger if they don't already exist
+    if not logger.handlers:
+        logger.addHandler(file_handler)
+        logger.addHandler(console_handler)
 
 
 #########################
-class doAuthenticate:
-    """Authenticates and returns auth token value."""
+class Authenticator:
+    """Handles authentication and checks if the auth token is about to expire."""
     AUTH_URL = '/learn/api/public/v1/oauth2/token'
 
     def __init__(self, host, key, secret):
@@ -135,25 +143,37 @@ class doAuthenticate:
         m, s = divmod(expires_in, 60)  # Convert to minutes and seconds
         self.expiresAt = datetime.datetime.now() + datetime.timedelta(seconds=s, minutes=m)
         self.authStr = f'Bearer {self.token}'
-        logging.info(f"|Auth token expires in {m} minutes and {s} seconds. (Expires at: {self.expiresAt})")
+        logging.info(f"Auth token expires in {m} minutes and {s} seconds. (Expires at: {self.expiresAt})")
 
     def is_token_expired(self):
         """Check if the token is expired."""
         return datetime.datetime.now() >= self.expiresAt  
-    
 
-#########################
-class nearlyExpired:
-  """Returns true if the auth token is about to expire."""
-  def __init__(self,sessionExpireTime):
-      bufferSeconds = 30  # Configurable buffer.
-      self.expired = False
-      self.time_left = (sessionExpireTime - datetime.datetime.now()).total_seconds()
-      #self.time_left = 29  # use for testing
-      if self.time_left < bufferSeconds:
-            logging.info(f'|PLEASE WAIT  Token almost expired retrieving new token in ' + str(bufferSeconds) + 'seconds.')
-            time.sleep(bufferSeconds + 1)
-            self.expired = True
+    def is_token_nearly_expired(self, buffer_seconds):
+        """Returns true if the auth token is about to expire."""
+        time_left = (self.expiresAt - datetime.datetime.now()).total_seconds()
+        if time_left < buffer_seconds:
+            logging.info(f'PLEASE WAIT: Token almost expired, retrieving new token in {buffer_seconds} seconds.')
+            time.sleep(buffer_seconds + 1)
+            return True
+        return False
+
+############################
+# Decorator to count GET requests
+def count_get_requests(func):
+    """wraps around the requests.get function to count each time it is called"""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        wrapper.get_request_count += 1
+        return func(*args, **kwargs)
+    wrapper.get_request_count = 0
+    return wrapper
+
+# Apply the decorator to the requests.get function
+@count_get_requests
+def requests_get(url, **kwargs):
+    return requests.get(url, **kwargs)
+
 
 ############################
 class CheckRates:
@@ -167,7 +187,7 @@ class CheckRates:
        
     def _get_response_header(self, url):
         try: 
-            response = requests.get(self.host + url, headers={'Authorization': self.auth_token})
+            response = requests_get(self.host + url, headers={'Authorization': self.auth_token})
             response.raise_for_status()
             logging.debug(f'Response Headers: {response.headers}')
             return response.headers
@@ -187,7 +207,7 @@ class CheckRates:
     def display_rates(self):
         rate_limit, remaining_requests = self.fetch_rates()
         if rate_limit and remaining_requests:
-            logging.info(f"|Rate Limit: {rate_limit}. Remaining Requests: {remaining_requests}")
+            logging.info(f"Rate Limit: {rate_limit}. Remaining Requests: {remaining_requests}")
             return rate_limit, remaining_requests
         else:
             logging.error("Failed to fetch rate limit information.")
@@ -195,8 +215,52 @@ class CheckRates:
 
 
 ############################
+class GetCourseData:
+    """Gets extended attributes for select courseId or id"""
+    def __init__(self, course_ident: str, host: str, auth_token: str):
+        self.host = host  # API host URL
+        self.auth_token = auth_token  # Authentication token
+        # Regular expression to match the format _xxxxxx_1 where xxxxxx are all numbers
+        pattern = r'^_\d+_1$'
+        if re.match(pattern, course_ident):
+            self.course_ident = course_ident
+        else:
+            self.course_ident = f'courseId:{course_ident}'
+        self.course_data = None
+
+    def _build_url(self):
+        # Build the API URL for fetching course fields
+        fields = 'id,uuid,externalId,courseId,name'
+        return f'/learn/api/public/v3/courses/{self.course_ident}?fields={fields}'
+     
+    def _get_course_data(self, url):
+        # Fetch course data from the API
+        try:
+            response = requests_get(self.host + url, headers={'Authorization': self.auth_token})
+            response.raise_for_status()  # Raise exception for bad status codes
+            logging.debug(f'Retrieved course details{response.json()}')
+            return response.json()  # Return the JSON response as a dictionary
+        except requests.exceptions.HTTPError as http_err:
+            # Log any HTTP errors
+            logging.error(f'{self.course_ident} | {http_err}')
+        except requests.exceptions.RequestException as err:
+            # Log any request errors
+            logging.error(f'{self.course_ident} | {err}')
+        return None
+    
+    def fetch_course(self):
+        url = self._build_url()
+        self.course_data = self._get_course_data(url)
+        return self.course_data
+    
+    def get_course(self):
+        # Return the select fields
+        return self.course_data
+
+
+############################
 class GetMembers:
-    """Returns a list of students enrolled in a course. """
+    """Returns a list of students enrolled in a course with user attributes and child course info for merges. """
     def __init__(self, courseId: str, host: str, auth_token: str, result_limit: int):
         self.courseId = courseId  # Store course ID
         self.host = host  # API host URL
@@ -206,20 +270,22 @@ class GetMembers:
     
     def _build_url(self):
         # Build the API URL for fetching course members with the role "Student"
-        return f'/learn/api/public/v1/courses/courseId:{self.courseId}/users?role=Student&expand=user&fields=user.id,user.externalId,user.userName,user.studentId&limit={self.result_limit}'
+        role = 'Student'
+        fields = 'childCourseId,user.id,user.externalId,user.userName,user.studentId,user.name.given,user.name.family'
+        return f'/learn/api/public/v1/courses/courseId:{self.courseId}/users?role={role}&expand=user&fields={fields}&limit={self.result_limit}'
     
     def _get_members_data(self, url):
         # Fetch members data from the API endpoint
         try:
-            response = requests.get(self.host + url, headers={'Authorization': self.auth_token})
+            response = requests_get(self.host + url, headers={'Authorization': self.auth_token})
             response.raise_for_status()  # Raise exception for bad status codes
             return response.json()  # Return the JSON response as a dictionary
         except requests.exceptions.HTTPError as http_err:
             # Log any HTTP errors
-            logging.error(f'HTTP error occurred while getting members for course {self.courseId}: {http_err}')
+            logging.error(f'{self.courseId} | {http_err}')
         except requests.exceptions.RequestException as err:
             # Log any request errors
-            logging.error(f'Request error occurred while getting members for course {self.courseId}: {err}')
+            logging.error(f'{self.courseId} | {err}')
         return None
     
     def fetch_members(self):
@@ -237,9 +303,30 @@ class GetMembers:
             
             # Check if there's a next page, otherwise set the URL to empty
             url = members_data.get('paging', {}).get('nextPage', '')
+            
+    def get_members_with_children(self):
+        """If member has childCourseId add those details"""
+        children = [] #initiate list of child courses
+        for member in self.members:
+            if 'childCourseId' in member:
+                if not any(child.get('id') == member.get('childCourseId') for child in children):  #child not in list
+                    ##look up and add to list
+                    course_lookup = GetCourseData(member['childCourseId'], self.host, self.auth_token)
+                    course_lookup.fetch_course()
+                    newChild = course_lookup.get_course()
+                    logging.debug(f'Adding {newChild} to list for {self.courseId}')
+                    children.append(newChild)
+            logging.debug(f'List of children{children}')
+            for child in children:
+                if child['id'] == member['childCourseId']:
+                    member['childCourse'] = child
+                    logging.debug(f'Added child course record to member:{member}')
+        return self.members
+            
     
     def get_members_list(self):
-        # Return the final list of members
+        # Return list of members - without child course details
+        logging.debug(f'members:{self.members}')
         return self.members
 
 ######################
@@ -251,30 +338,40 @@ class GetMeetings:
         self.auth_token = auth_token
         self.result_limit = result_limit
         self.meetings = []  # Initialize an empty list for meetings
+    
+    def _build_url(self):
+        root_course_url = f'/learn/api/public/v1/courses/courseId:{self.courseId}'
+        return f'{root_course_url}/meetings?limit={self.result_limit}'
+    
+    def _get_meetings(self, url):
+        # Fetch meeting data from the API endpoint
+        try:
+            response = requests_get(self.host + url, headers={'Authorization': self.auth_token})
+            response.raise_for_status()  # Raise exception for bad status codes
+            return response.json()  # Return the JSON response as a dictionary
+        except requests.exceptions.HTTPError as http_err:
+            # Log any HTTP errors
+            logging.error(f'{self.courseId} | {http_err}')
+        except requests.exceptions.RequestException as err:
+            # Log any request errors
+            logging.error(f'{self.courseId} | {err}')
+        return None
 
     def fetch_meetings(self):
-        logging.debug(f'|Getting meeting information for {self.courseId}')
-        
-        root_course_url = f'/learn/api/public/v1/courses/courseId:{self.courseId}'
-        get_meetings_url = f'{root_course_url}/meetings?limit={self.result_limit}'
-        
-        while len(get_meetings_url) > 0:  # Loop to handle paging
-            logging.debug(get_meetings_url)
+        # Main function to retrieve meetings for a given course
+        url = self._build_url()  # Build the initial URL
+        while url:  # Loop to handle paginated results
+            logging.debug(f'Fetching meeetings from URL: {self.host + url}')
             
-            # Send the request to the API
-            response = requests.get(self.host + get_meetings_url, headers={'Authorization': self.auth_token})
-            logging.debug(response)
+            meeting_data = self._get_meetings(url)  # Get meetings from API
+            if not meeting_data:
+                break  # Exit if there's an issue with the API response
             
-            if response.status_code != 200:  # Log error if response is not successful
-                logging.error(f'|{self.courseId}|Error getting meetings.')
-                break
+            # Add the current page of results to the list
+            self.meetings.extend(meeting_data.get("results", []))
             
-            # Parse the JSON response and append meetings
-            meetings_data = json.loads(response.text)
-            self.meetings += meetings_data.get("results", [])
-            
-            # Check if there are more pages to fetch
-            get_meetings_url = meetings_data.get("paging", {}).get("nextPage", '')
+            # Check if there's a next page, otherwise set the URL to empty
+            url = meeting_data.get('paging', {}).get('nextPage', '')
 
     def get_meetings_list(self):
         return self.meetings
@@ -293,18 +390,16 @@ class GetRecords:
     def fetch_records(self):
         ## There is a "bug" in GET /learn/api/public/v1/courses/{courseId}/meetings/{meetingId}/users
         ## only the primary course ID value is acceptable   eg  _2221_1
-        logging.debug(f'|Getting attendance for meeting {self.this_meeting} course {self.this_course}')
+        logging.debug(f'Getting attendance for meeting {self.this_meeting} course {self.this_course}')
         
         get_records_url = f'/learn/api/public/v1/courses/{self.this_course}/meetings/{self.this_meeting}/users?limit={self.result_limit}'
         
         while get_records_url:  # Loop to handle paging
-            logging.debug(get_records_url)
-            
             try:
-                response = requests.get(self.host + get_records_url, headers={'Authorization': self.auth_token}, timeout=10)
+                response = requests_get(self.host + get_records_url, headers={'Authorization': self.auth_token}, timeout=10)
                 response.raise_for_status()
             except requests.exceptions.RequestException as e:
-                logging.error(f'|{self.this_course}|Error getting records: {e}')
+                logging.error(f'{self.this_course}>Error getting records: {e}')
                 break
             
             records_data = response.json()
@@ -324,7 +419,7 @@ batchId = batchStart.strftime("%Y%m%d-%H%M")
 
 # Call the setup_logging function
 setup_logging(batchId)
-logging.info(f'|Starting Batch Attendance ID = ' + batchId)
+logging.info(f'Starting Batch Attendance ID = ' + batchId)
 
 # Get config file data and populate variables
 config_data = parse_arguments_and_config()
@@ -334,9 +429,10 @@ KEY = config_data['KEY']
 SECRET = config_data['SECRET']
 HOST = config_data['HOST']
 RESULTLIMIT = config_data['RESULTLIMIT']
+SESSIONBUFFER = config_data['SESSIONBUFFER']
 
 # Authenticate
-thisAuth = doAuthenticate(HOST, KEY, SECRET)
+thisAuth = Authenticator(HOST, KEY, SECRET)
 
 #Check Rate Limits
 rate_checker = CheckRates(HOST, thisAuth.authStr)
@@ -346,9 +442,15 @@ rate_limit, start_remaining_requests = rate_checker.fetch_rates()
 #file readiness
 inputFile = open(inFile)
 
+#Sets the keys for attendanceRow below  - determines file order too
+header = [
+    'courseId', 'courseName', 'courseExtKey', 'course_pk1',
+    'meeting_id', 'meeting_start', 'meeting_end', 'status',
+    'user_pk1', 'username', 'external_user_key', 'student_id', 'firstname', 'lastname',
+    'childCourseId', 'childCourseName', 'childExtKey','child_pk1'
+]
 outFileName = f'attendance_output_{batchId}.csv'
 outputFile = open(outFileName, 'w', newline='')
-header = ['courseId', 'course_pk1', 'meeting_id', 'meeting_start', 'meeting_end', 'status', 'user_pk1', 'username', 'external_user_key', 'student_id']
 outputWriter = csv.DictWriter(outputFile, delimiter='|', fieldnames = header)
 outputWriter.writeheader()
 
@@ -359,10 +461,20 @@ rowCounter = 0
 # start processing courses from the list 
 for line in inputFile:
     """itterate over the courseIds in the input file"""
-    if nearlyExpired(thisAuth.expiresAt).expired:
-        thisAuth = doAuthenticate()
+    
+    if thisAuth.is_token_nearly_expired(SESSIONBUFFER):
+        thisAuth.authenticate()
+    
     thisId = line.rstrip()
-    logging.debug(f'|'+ thisId + '|Start this course')
+    logging.debug(f'{thisId}>Start this course')
+    
+    # Look up course or skip if not found.
+    lookup_this_course = GetCourseData(thisId, HOST, thisAuth.authStr)
+    lookup_this_course.fetch_course()
+    thisCourse = lookup_this_course.get_course()
+    if not thisCourse:
+        logging.info(f'{thisId} > No course found.')
+        continue
 
     # Fetch a list of meetings or skip if none
     get_meetings = GetMeetings(thisId, HOST, thisAuth.authStr, RESULTLIMIT)
@@ -370,65 +482,71 @@ for line in inputFile:
     meetings_list = get_meetings.get_meetings_list()
     meetingCount = len(meetings_list)
     if meetingCount == 0: 
-        logging.info(f'|'+ thisId + '|No meetings.')
+        logging.info(f'{thisId} | No meetings.')
         continue
 
     # Fetch a list of members (students) or skip if none
     get_members = GetMembers(thisId, HOST, thisAuth.authStr, RESULTLIMIT)
     get_members.fetch_members()
-    members_list = get_members.get_members_list()
+    members_list = get_members.get_members_with_children()
     memberCount = len(members_list)
     if memberCount == 0: 
-        logging.info(f'|'+ thisId + '|No members.')
+        logging.info(f'{thisId} | No members.')
         continue
 
+    # Fetch attendance records for all meetings
     allRecords = []  # Initialize list
-
-    # Fetch all attendance records for all meetings
     for meeting in meetings_list:
         """Itterate over each meeting in the course."""
         get_records = GetRecords(str(meeting['id']), meeting['courseId'], HOST, thisAuth.authStr, RESULTLIMIT)
-        ##We use the course id value in the _12345_1 format here. See note in GetRecords
+        #We use the course id value in the _12345_1 format here. See note in GetRecords
         get_records.fetch_records()
         records_list = get_records.get_records_list()
         allRecords.extend(records_list)
-
     recordCount = len(allRecords)
     if recordCount == 0: 
-        logging.info(f'|{thisId}|No attendance records.')
+        logging.info(f'{thisId} | No attendance records.')
     else:
-        logging.info(f'|{thisId}|{memberCount} students, {meetingCount} meetings, and {recordCount} attendance records.')
+        logging.info(f'{thisId} | {memberCount} students, {meetingCount} meetings, and {recordCount} attendance records.')
 
-    # Combine data from lists and write to outFile
+    # Combine data and write to outFile
     for meeting in meetings_list:
-        meeting_id = str(meeting['id'])
-        course_id = meeting['courseId']
-        meeting_start = meeting['start']
-        meeting_end = meeting['end']
-
         # Iterate through all members and check if they have a record
         for member in members_list:
-            user = member['user']
-            user_id = user['id']
-
+            user_id = member['user']['id']
+            meeting_id = meeting['id']
+            logging.debug(f' meeting = {meeting_id} and user = {user_id}')
             # Check if the user has an attendance record for this meeting
-            attendance_record = next((rec for rec in allRecords if rec['userId'] == user_id and rec['meetingId'] == meeting_id), None)
-
-            # Set the status: "Null" if no record found
+            for rec in allRecords:
+                logging.debug(f"Checking record: {rec}")
+                if rec['userId'] == user_id and rec['meetingId'] == meeting_id:
+                    logging.debug(f"Match found: {rec}")
+                    attendance_record = rec
+                    break
+                else:
+                    attendance_record = None
             status = attendance_record['status'] if attendance_record else 'Null'
 
-            # Declare the attendanceRow based on the determined status
+            # Declare the attendanceRow match to headers = keys above
             attendanceRow = {
                 'courseId': thisId,
-                'course_pk1': course_id,
-                'meeting_id': meeting_id,
-                'meeting_start': meeting_start,
-                'meeting_end': meeting_end,
+                'courseName':thisCourse['name'],
+                'courseExtKey': thisCourse['externalId'],
+                'course_pk1': thisCourse['id'],
+                'meeting_id': str(meeting['id']),
+                'meeting_start': meeting['start'],
+                'meeting_end': meeting['end'],
                 'status': status,
-                'user_pk1': user_id,
-                'username': user['userName'],
-                'external_user_key': user['externalId'],
-                'student_id': user.get('studentId', '')
+                'user_pk1': member['user']['id'],
+                'username': member['user']['userName'],
+                'external_user_key': member['user']['externalId'],
+                'student_id': member['user'].get('studentId', ''),
+                'firstname': member['user']['name']['given'],
+                'lastname': member['user']['name']['family'],
+                'childCourseId': member.get('childCourse', {}).get('courseId', ''),
+                'childCourseName': member.get('childCourse', {}).get('name', ''),
+                'childExtKey': member.get('childCourse', {}).get('externalId', ''),
+                'child_pk1': member.get('childCourseId','')
             }
 
             # Write the row to the output file
@@ -439,10 +557,11 @@ for line in inputFile:
 #Calculate requests made
 rate_checker = CheckRates(HOST, thisAuth.authStr)
 rate_limit, end_remaining_requests = rate_checker.fetch_rates()
-used_requests = int(start_remaining_requests) - int(end_remaining_requests)
-logging.info(f'|This batch made {used_requests} requests. There are {end_remaining_requests} remaining today.')
+req_diff = int(start_remaining_requests) - int(end_remaining_requests)
+logging.info(f'There are {end_remaining_requests} remaining today. That is a difference of {req_diff}.')
+logging.info(f'Total GET requests made: {requests_get.get_request_count}')
 
 # lets close up shop
 outputFile.close()
 inputFile.close()
-logging.info(f'|Closing batch ' + batchId + ' with ' + str(rowCounter) + ' records.')
+logging.info(f'Closing batch ' + batchId + ' with ' + str(rowCounter) + ' records.')
