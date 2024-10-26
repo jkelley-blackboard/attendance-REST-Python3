@@ -1,5 +1,6 @@
 # attendance-REST-Python3
 This is a single python module which will generate an export of attendance data for a provided list of courses
+Install and Configure:  https://drive.google.com/file/d/1KzZ8rLpDLcoAC6O3k3UGNrNDZTx7y4q6/view?usp=sharing
 
 usage = batch_attendance3.py properties_file.ini list_of_courses.csv
 
