@@ -25,6 +25,7 @@ TODO:
 
 """
 
+import os
 import json
 import datetime
 import time
@@ -84,8 +85,8 @@ def setup_logging(batchId):
     logger.setLevel(logging.INFO)  # Set log level to INFO
     
     # Create a file handler for logging to a file
-    logfilename = f'attendance_logfile_{batchId}.log'
-    file_handler = logging.FileHandler(logfilename, 'a')
+    logfile = os.path.join(batchId, f'attendance_logfile_{batchId}.log')
+    file_handler = logging.FileHandler(logfile, 'a')
     file_handler.setLevel(logging.INFO)
 
     # Create a console handler for logging to stdout
@@ -183,7 +184,8 @@ class CheckRates:
         self.auth_token = auth_token
         
     def _build_url(self):
-        return '/learn/api/public/v1/users/_1_1'
+        # no privliges required
+        return '/learn/api/public/v3/courses/_1_1'   
        
     def _get_response_header(self, url):
         try: 
@@ -231,6 +233,7 @@ class GetCourseData:
     def _build_url(self):
         # Build the API URL for fetching course fields
         fields = 'id,uuid,externalId,courseId,name'
+        # to get externalId, privlige Course/Organization Control Panel (Customization) > Properties [course.configure-properties.EXECUTE]
         return f'/learn/api/public/v3/courses/{self.course_ident}?fields={fields}'
      
     def _get_course_data(self, url):
@@ -272,6 +275,9 @@ class GetMembers:
         # Build the API URL for fetching course members with the role "Student"
         role = 'Student'
         fields = 'childCourseId,user.id,user.externalId,user.userName,user.studentId,user.name.given,user.name.family'
+        # Likely allowed by having both privliges:
+        #  User management by Web Services [system.useradmin.generic.VIEW]
+        #  Administrator Panel (Courses) > Courses [system.course.VIEW]
         return f'/learn/api/public/v1/courses/courseId:{self.courseId}/users?role={role}&expand=user&fields={fields}&limit={self.result_limit}'
     
     def _get_members_data(self, url):
@@ -341,6 +347,7 @@ class GetMeetings:
     
     def _build_url(self):
         root_course_url = f'/learn/api/public/v1/courses/courseId:{self.courseId}'
+        #privlige Course/Organization Control Panel (Tools) > Attendance > View Attendance [course.attendance.VIEW]
         return f'{root_course_url}/meetings?limit={self.result_limit}'
     
     def _get_meetings(self, url):
@@ -387,26 +394,41 @@ class GetRecords:
         self.result_limit = result_limit
         self.records: List[dict] = []  # Initialize an empty list for records
 
-    def fetch_records(self):
-        ## There is a "bug" in GET /learn/api/public/v1/courses/{courseId}/meetings/{meetingId}/users
-        ## only the primary course ID value is acceptable   eg  _2221_1
-        logging.debug(f'Getting attendance for meeting {self.this_meeting} course {self.this_course}')
-        
-        get_records_url = f'/learn/api/public/v1/courses/{self.this_course}/meetings/{self.this_meeting}/users?limit={self.result_limit}'
-        
-        while get_records_url:  # Loop to handle paging
-            try:
-                response = requests_get(self.host + get_records_url, headers={'Authorization': self.auth_token}, timeout=10)
-                response.raise_for_status()
-            except requests.exceptions.RequestException as e:
-                logging.error(f'{self.this_course}>Error getting records: {e}')
-                break
-            
-            records_data = response.json()
-            self.records += records_data.get("results", [])
-            get_records_url = records_data.get("paging", {}).get("nextPage", '')
+    def _build_url(self):
+        #privlige Course/Organization Control Panel (Tools) > Attendance > View Attendance [course.attendance.VIEW]
+        return f'/learn/api/public/v1/courses/{self.this_course}/meetings/{self.this_meeting}/users?limit={self.result_limit}'
+    
+    def _get_records(self, url):
+        # Fetch enrollment records from the API endpoint
+        try:
+            response = requests_get(self.host + url, headers={'Authorization': self.auth_token})
+            response.raise_for_status()  # Raise exception for bad status codes
+            return response.json()  # Return the JSON response as a dictionary
+        except requests.exceptions.HTTPError as http_err:
+            # Log any HTTP errors
+            logging.error(f'{self.this_course} | {http_err}')
+        except requests.exceptions.RequestException as err:
+            # Log any request errors
+            logging.error(f'{self.this_course} | {err}')
+        return None    
 
-    def get_records_list(self) -> List[dict]:
+    def fetch_records(self):
+        # Main function to retrieve attendance records for course/meeting pair
+        url = self._build_url()  # Build the initial URL
+        while url:  # Loop to handle paginated results
+            logging.debug(f'Fetching records from URL: {self.host + url}')
+            
+            records_data = self._get_records(url)
+            if not records_data:
+                break  # Exit if there's an issue with the API response
+            
+            # Add the current page of results to the list
+            self.records.extend(records_data.get("results", []))
+            
+            # Check if there's a next page, otherwise set the URL to empty
+            url = records_data.get('paging', {}).get('nextPage', '')
+
+    def get_records_list(self):
         return self.records
 
 
@@ -415,7 +437,8 @@ class GetRecords:
 
 # let's go!
 batchStart = datetime.datetime.now()
-batchId = batchStart.strftime("%Y%m%d-%H%M")
+batchId = str(batchStart.strftime("%Y%m%d-%H%M%S"))
+os.makedirs(batchId)
 
 # Call the setup_logging function
 setup_logging(batchId)
@@ -449,8 +472,8 @@ header = [
     'user_pk1', 'username', 'external_user_key', 'student_id', 'firstname', 'lastname',
     'childCourseId', 'childCourseName', 'childExtKey','child_pk1'
 ]
-outFileName = f'attendance_output_{batchId}.csv'
-outputFile = open(outFileName, 'w', newline='')
+outFile = os.path.join(batchId, f'attendance_output_{batchId}.csv')
+outputFile = open(outFile, 'w', newline='')
 outputWriter = csv.DictWriter(outputFile, delimiter='|', fieldnames = header)
 outputWriter.writeheader()
 
@@ -466,7 +489,9 @@ for line in inputFile:
         thisAuth.authenticate()
     
     thisId = line.rstrip()
-    logging.debug(f'{thisId}>Start this course')
+    logging.debug(f'')
+    logging.debug(f'---------------------------------')
+    logging.debug(f'{thisId} > Start this course')
     
     # Look up course or skip if not found.
     lookup_this_course = GetCourseData(thisId, HOST, thisAuth.authStr)
@@ -498,34 +523,42 @@ for line in inputFile:
     allRecords = []  # Initialize list
     for meeting in meetings_list:
         """Itterate over each meeting in the course."""
-        get_records = GetRecords(str(meeting['id']), meeting['courseId'], HOST, thisAuth.authStr, RESULTLIMIT)
+        attendance_fetcher = GetRecords(str(meeting['id']), meeting['courseId'], HOST, thisAuth.authStr, RESULTLIMIT)
         #We use the course id value in the _12345_1 format here. See note in GetRecords
-        get_records.fetch_records()
-        records_list = get_records.get_records_list()
+        attendance_fetcher.fetch_records()
+        records_list = attendance_fetcher.get_records_list()
         allRecords.extend(records_list)
     recordCount = len(allRecords)
     if recordCount == 0: 
         logging.info(f'{thisId} | No attendance records.')
     else:
+        logging.debug(f'allRecords:{allRecords}')
         logging.info(f'{thisId} | {memberCount} students, {meetingCount} meetings, and {recordCount} attendance records.')
 
     # Combine data and write to outFile
     for meeting in meetings_list:
-        # Iterate through all members and check if they have a record
+        meeting_id = str(meeting['id'])
+        meeting_start = meeting['start']
+        meeting_end = meeting['end']
+        
         for member in members_list:
-            user_id = member['user']['id']
-            meeting_id = meeting['id']
+            user = member['user']
+            user_id = str(user['id'])
             logging.debug(f' meeting = {meeting_id} and user = {user_id}')
-            # Check if the user has an attendance record for this meeting
-            for rec in allRecords:
-                logging.debug(f"Checking record: {rec}")
-                if rec['userId'] == user_id and rec['meetingId'] == meeting_id:
-                    logging.debug(f"Match found: {rec}")
-                    attendance_record = rec
-                    break
-                else:
-                    attendance_record = None
-            status = attendance_record['status'] if attendance_record else 'Null'
+            
+            # Find the attendance record using a generator expression with next
+            attendance_record = next(
+                (rec for rec in allRecords if str(rec['userId']) == user_id and str(rec['meetingId']) == meeting_id),
+                None
+            )
+
+            # Log the result
+            if attendance_record:
+                logging.debug(f"Match found: {attendance_record}")
+                status = attendance_record['status']
+            else:
+                logging.debug("No match found")
+                status = 'Null'
 
             # Declare the attendanceRow match to headers = keys above
             attendanceRow = {
