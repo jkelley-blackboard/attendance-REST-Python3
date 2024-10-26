@@ -40,7 +40,7 @@ The code includes classes and methods to
 - combine the data with attendance status 'Null' where a meeting exists but the student doesn't have record
 
 The code uses the following non-standard Python Modules
-I have included a Setup.cmd file which installs them on windows using PIP
+I have included a requirements.txt file for easy installation.
 
 - datetime
 - argparse
@@ -48,3 +48,5 @@ I have included a Setup.cmd file which installs them on windows using PIP
 - logging
 - requests
 - typing
+
+I have included to bat files to aid in establishing virtual environment and installing the nec modules.
