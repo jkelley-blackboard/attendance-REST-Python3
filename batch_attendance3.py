@@ -17,11 +17,7 @@ Itterate through the list of cousres
     - record Null if there is a meeting, but no attendance record for a student
 
 TODO:
- - make other course attributes (external key) and user attributes (first, last) available
-   - course attributes require addtional requests
-   - get user attributes from expanded membership requests
  - handle a course with dates and no attendance records at all
- - handle merged courses
 
 """
 
