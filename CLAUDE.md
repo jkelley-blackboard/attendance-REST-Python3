@@ -98,17 +98,21 @@ Endpoints in use (see https://developer.blackboard.com/portal/displayApi):
     GET  /learn/api/public/v1/courses/{courseId}/meetings/{meetingId}/users
 
 - Input lines are treated as batch UIDs and prefixed `courseId:` in URLs.
-  `GetCourseData` is the exception: it regex-matches `_\d+_1` and passes a pk1
-  through unprefixed. The membership/meeting classes hardcode the prefix, so a
-  pk1 in the input file resolves the course but then fails downstream.
+  `course_ident()` is the exception: it regex-matches `_\d+_1` and passes a pk1
+  through unprefixed. The membership and meeting fetchers hardcode the prefix,
+  so a pk1 in the input file resolves the course but then fails downstream.
 - `Authenticator.is_token_nearly_expired(SESSIONBUFFER)` is checked at the top of
   each course iteration; token refresh happens there. Any new long loop needs the
   same check.
-- Merged courses: `GetMembers.get_members_with_children` attaches child course
-  info to each member, which fills the `child*` output columns.
+- Merged courses: `fetch_members` attaches child course info to each member,
+  which fills the `child*` output columns. It looks up each distinct child once
+  and skips members with no `childCourseId` — indexing that key unconditionally
+  used to raise `KeyError` on students enrolled in the parent.
 - A meeting with no attendance record for an enrolled student is written with
   `status` = `Null`. That's intentional, not a gap.
-- `CheckRates` is called at start and end to report daily quota consumption.
+- `LearnClient.display_rates()` runs at start and `fetch_rates()` at the end, to
+  report how many requests the run consumed. The rate headers come back even on
+  a 404, so `fetch_rates` deliberately doesn't require `response.ok`.
 - `fetch_all_records` picks the cheaper axis per course: per meeting costs
   `meetings * ceil(students/limit)`, per student costs
   `students * ceil(meetings/limit)`. Both endpoints return the same

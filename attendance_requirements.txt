@@ -1,2 +1,5 @@
-requests==2.32.5
-python-dotenv==1.0.1
+# Compatible-release pins: security and bug-fix updates flow through,
+# major-version changes do not. Everything else the script imports is
+# in the Python 3.11 standard library.
+requests~=2.32
+python-dotenv~=1.0
