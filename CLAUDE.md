@@ -27,6 +27,7 @@ commands. Don't reintroduce wrapper scripts; document the commands instead.
 | `sample_list_of_course_IDs.csv` | Template input, one courseId per line |
 | `attendance_requirements.txt` | pip requirements |
 | `INSTALL.md` | End-user setup guide (was a .docx; converted to Markdown) |
+| `docs/time-efficiency.md` | Public engineering note on scaling — measured latency, volume and the four levers |
 | `internal/` | **Gitignored.** Local scratch, real credentials (`internal/.env`), real course lists, kept output |
 
 ## Running it

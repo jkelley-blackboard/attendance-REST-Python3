@@ -8,6 +8,11 @@ log alongside it.
 portal application, creating the Blackboard system role and REST integration,
 setting up the local Python environment, and a troubleshooting table.
 
+**Running this at scale?** [docs/time-efficiency.md](docs/time-efficiency.md)
+covers what actually makes a large export fast — connection reuse, concurrency,
+choosing the cheaper request axis, and why the naive record-pairing loop is
+quadratic. Measured figures, and useful whether or not you use this script.
+
 ---
 
 ## Requirements
@@ -74,6 +79,10 @@ identifiers. Output is roughly 3x smaller, which matters on large batches.
 
 `--records-only` additionally skips the membership request and emits only
 attendance that was actually taken. It implies `--minimal`.
+
+The modes barely change request count — they exist for output volume. See
+[docs/time-efficiency.md](docs/time-efficiency.md#what-the-modes-do-for-time)
+for the numbers.
 
 ## Output
 
