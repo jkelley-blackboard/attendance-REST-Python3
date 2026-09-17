@@ -1,0 +1,19 @@
+# Normalize everything to LF in the repository and in the working tree.
+# The repo was previously mixed: the script and the sample csv were CRLF while
+# every other file was LF, which produced a warning on each commit. Python,
+# and every editor this is likely to be opened in, handles LF on Windows.
+* text=auto eol=lf
+
+# Explicit for the file types actually in the repo
+*.py    text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.csv   text eol=lf
+*.example text eol=lf
+
+# Never touched by line-ending conversion
+*.png   binary
+*.jpg   binary
+*.pdf   binary
+*.docx  binary
+*.xlsx  binary

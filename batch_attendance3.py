@@ -1,8 +1,14 @@
 """
-py 3.11
+Python 3.11+
 generate delimted file of attendance records from a list of course_ids
-usage: batch_attendance3.py list_of_courses.csv [--env-file PATH]
-by Jeff.Kelley@blackboard.com   Updated October 2024
+by Jeff.Kelley@blackboard.com   Updated September 2026
+
+usage:
+  batch_attendance3.py list_of_courses.csv [--env-file PATH]
+  batch_attendance3.py list_of_courses.csv --minimal        # pk1 columns only
+  batch_attendance3.py list_of_courses.csv --records-only   # no status=Null rows
+
+Credentials are read from .env -- see .env.example.
 
 BLACKBOARD MAKES NO REPRESENTATIONS OR WARRANTIES ABOUT THE SUITABILITY OF THE SOFTWARE, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
 TO THE IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, OR NON-INFRINGEMENT. BLACKBOARD SHALL NOT BE LIABLE FOR ANY
