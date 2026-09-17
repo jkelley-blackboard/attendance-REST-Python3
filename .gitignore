@@ -1,0 +1,41 @@
+# --- Local-only working area (notes, real client data, scratch) ---
+internal/
+
+# --- Credentials / real config ---
+# .env.example is the committed template; every filled-in copy stays local
+.env
+.env.*
+!.env.example
+# legacy properties.ini config, replaced by .env
+*.ini
+
+# --- Batch run output ---
+# batch_attendance3.py creates a YYYYMMDD-HHMMSS folder per run
+# containing attendance_output_*.csv and attendance_logfile_*.log
+[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]/
+*.log
+
+# --- Real course ID lists (keep only the sample) ---
+*.csv
+!sample_list_of_course_IDs.csv
+
+# --- Python ---
+venv_batch_attendance/
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+~$*
+*.tmp
