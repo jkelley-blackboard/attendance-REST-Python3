@@ -114,12 +114,20 @@ Endpoints in use (see https://developer.blackboard.com/portal/displayApi):
   `students * ceil(meetings/limit)`. Both endpoints return the same
   `AttendanceRecord` shape, so callers can't tell which was used.
 - Request counts are dominated by the attendance fetch (~94% on a typical
-  course). Trimming fields saves payload, not requests — don't expect
-  `--minimal` to cut the quota meaningfully.
+  course). Trimming fields saves payload, not requests — the argument for
+  `--minimal` is output volume (~3x smaller rows), not quota.
 - `/meetings/downloadUrl` looks like a bulk escape hatch but is not usable: it
   returns a legacy `/webapps/` servlet URL that 404s with a REST bearer token.
-- A 1000-course batch of typical lectures is ~64,000 requests against a
-  10,000/day quota. There is no resume support yet.
+- Daily quota is not a design constraint — a production integration can have its
+  rate limit raised. The binding constraints are wall-clock time and output
+  size. Measured at 40ms/request with keep-alive, 1000 typical courses is
+  ~64,000 requests and ~43 minutes sequential. The same batch without connection
+  reuse is ~13 hours, which is why the shared `requests.Session` matters more
+  than any other optimization here.
+- Output volume is the real ceiling: 1000 typical courses is ~6M rows / ~1.3GB
+  in full mode, well past Excel's 1,048,576-row limit. Rows stream to disk per
+  row; keep record accumulation scoped per course (36MB worst case) rather than
+  per batch.
 
 Config is read before the batch folder is created, so a bad invocation reports
 an error without leaving an empty timestamped folder behind.
