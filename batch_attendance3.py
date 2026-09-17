@@ -23,6 +23,7 @@ TODO:
 """
 
 import os
+import math
 import datetime
 import time
 import sys
@@ -84,8 +85,18 @@ def parse_arguments_and_config():
     parser.add_argument("INPUT_FILE", help="List of Learn Course IDs")
     parser.add_argument("--env-file", dest="ENV_FILE", default=None,
                         help="Path to the .env file (default: ./.env then ./internal/.env)")
+    parser.add_argument("--minimal", action="store_true",
+                        help="Emit pk1 values only. Skips the course detail and child course "
+                             "lookups and drops expand=user from the membership request.")
+    parser.add_argument("--records-only", dest="RECORDS_ONLY", action="store_true",
+                        help="Export only real attendance records, with no status=Null rows "
+                             "for students who have none. Skips the membership request "
+                             "entirely and implies --minimal.")
 
     args = parser.parse_args()
+
+    # records-only has no membership data to draw names from, so it is always minimal
+    MINIMAL = args.minimal or args.RECORDS_ONLY
 
     # Load the .env file into the process environment. Real environment
     # variables win, so a scheduler can override without editing the file.
@@ -131,7 +142,9 @@ def parse_arguments_and_config():
         'SECRET': SECRET,
         'HOST': HOST,
         'RESULTLIMIT': RESULTLIMIT,
-        'SESSIONBUFFER': SESSIONBUFFER
+        'SESSIONBUFFER': SESSIONBUFFER,
+        'MINIMAL': MINIMAL,
+        'RECORDSONLY': args.RECORDS_ONLY
     }
 
 
@@ -325,6 +338,10 @@ COURSE_FIELDS = 'id,uuid,externalId,courseId,name'
 #  Administrator Panel (Courses) > Courses [system.course.VIEW]
 MEMBER_FIELDS = 'childCourseId,user.id,user.externalId,user.userName,user.studentId,user.name.given,user.name.family'
 
+# Without expand=user the membership carries userId natively, which is all the
+# minimal column set needs. Measured ~7x smaller per member than the expanded form.
+MEMBER_FIELDS_MINIMAL = 'userId,childCourseId'
+
 
 def course_ident(course_ident_raw: str) -> str:
     """A pk1 (_xxxxxx_1) is used as-is, anything else is a batch UID."""
@@ -355,11 +372,35 @@ def fetch_records(client: LearnClient, course_pk1: str, meeting_id: str):
     return client.get_paged(url, course_pk1)
 
 
-def fetch_members(client: LearnClient, courseId: str):
-    """Returns students enrolled in a course, with child course info for merges."""
+def fetch_records_by_user(client: LearnClient, course_pk1: str, user_id: str):
+    """Returns every attendance record for one student across all meetings.
+
+    Same AttendanceRecord shape as fetch_records (meetingId, userId, status),
+    just gathered along the other axis.
+    """
+    #privlige Course/Organization Control Panel (Tools) > Attendance > View Attendance [course.attendance.VIEW]
+    url = (f'/learn/api/public/v1/courses/{course_pk1}'
+           f'/meetings/users/{user_id}?limit={client.result_limit}')
+    return client.get_paged(url, course_pk1)
+
+
+def fetch_members(client: LearnClient, courseId: str, minimal: bool = False):
+    """Returns students enrolled in a course, with child course info for merges.
+
+    In minimal mode the user object is not expanded and child courses are not
+    looked up -- childCourseId is already the pk1 the minimal columns report.
+    """
+    fields = MEMBER_FIELDS_MINIMAL if minimal else MEMBER_FIELDS
+    expand = '' if minimal else '&expand=user'
     url = (f'/learn/api/public/v1/courses/courseId:{courseId}'
-           f'/users?role=Student&expand=user&fields={MEMBER_FIELDS}&limit={client.result_limit}')
+           f'/users?role=Student{expand}&fields={fields}&limit={client.result_limit}')
     members = client.get_paged(url, courseId)
+
+    if minimal:
+        # Normalise to the same shape the row builder reads
+        for member in members:
+            member.setdefault('user', {'id': member.get('userId')})
+        return members
 
     # Look up each distinct child course once, then attach it to its members.
     children = {}
@@ -377,6 +418,35 @@ def fetch_members(client: LearnClient, courseId: str):
     return members
 
 
+def fetch_all_records(client: LearnClient, course_pk1: str, meetings_list, members_list):
+    """Fetches every attendance record for a course along the cheaper axis.
+
+    Per meeting costs meetings * ceil(students/limit); per student costs
+    students * ceil(meetings/limit). They are equal in the common case where
+    both fit one page, but a meeting-heavy course is far cheaper per student.
+    Both endpoints return the same record shape, so the caller cannot tell.
+    """
+    meetingCount = len(meetings_list)
+    memberCount = len(members_list)
+    limit = client.result_limit
+
+    perMeetingCost = meetingCount * math.ceil(memberCount / limit) if memberCount else meetingCount
+    perUserCost = memberCount * math.ceil(meetingCount / limit) if meetingCount else memberCount
+
+    allRecords = []
+    if memberCount and perUserCost < perMeetingCost:
+        logging.debug(f'Fetching records by user: {perUserCost} calls beats {perMeetingCost} by meeting.')
+        for member in members_list:
+            allRecords.extend(fetch_records_by_user(client, course_pk1, str(member['user']['id'])))
+    else:
+        logging.debug(f'Fetching records by meeting: {perMeetingCost} calls.')
+        for meeting in meetings_list:
+            """Itterate over each meeting in the course."""
+            #We use the course id value in the _12345_1 format here. See note in fetch_records
+            allRecords.extend(fetch_records(client, meeting['courseId'], str(meeting['id'])))
+    return allRecords
+
+
 ############################
 ## ROW ASSEMBLY ##
 
@@ -388,8 +458,45 @@ HEADER = [
     'childCourseId', 'childCourseName', 'childExtKey','child_pk1'
 ]
 
+# --minimal / --records-only: pk1 values only, no name or username lookups
+MINIMAL_HEADER = [
+    'courseId', 'course_pk1',
+    'meeting_id', 'meeting_start', 'meeting_end', 'status',
+    'user_pk1', 'child_pk1'
+]
 
-def build_rows(thisId, thisCourse, meetings_list, members_list, allRecords):
+
+def minimal_row(thisId, course_pk1, meeting, user_pk1, status, child_pk1):
+    """One row of the reduced column set."""
+    return {
+        'courseId': thisId,
+        'course_pk1': course_pk1,
+        'meeting_id': str(meeting['id']),
+        'meeting_start': meeting['start'],
+        'meeting_end': meeting['end'],
+        'status': status,
+        'user_pk1': user_pk1,
+        'child_pk1': child_pk1
+    }
+
+
+def build_record_rows(thisId, course_pk1, meetings_list, allRecords):
+    """--records-only: one row per attendance record that actually exists.
+
+    No membership list is fetched, so there are no status=Null rows and no
+    child course column values.
+    """
+    meetingIndex = {str(m['id']): m for m in meetings_list}
+    for rec in allRecords:
+        meeting = meetingIndex.get(str(rec['meetingId']))
+        if not meeting:
+            logging.debug(f"Record for unknown meeting {rec['meetingId']}, skipped")
+            continue
+        yield minimal_row(thisId, course_pk1, meeting,
+                          str(rec['userId']), rec['status'], '')
+
+
+def build_rows(thisId, thisCourse, meetings_list, members_list, allRecords, minimal=False):
     """Yields one row per meeting/student pair, 'Null' where there is no record."""
     # Index the records by (meeting, user) so the pairing below is a dict hit
     # rather than a scan of allRecords for every student/meeting combination.
@@ -417,6 +524,11 @@ def build_rows(thisId, thisCourse, meetings_list, members_list, allRecords):
                 logging.debug("No match found")
                 status = 'Null'
 
+            if minimal:
+                yield minimal_row(thisId, thisCourse['id'], meeting, user['id'],
+                                  status, member.get('childCourseId', ''))
+                continue
+
             # Declare the attendanceRow match to HEADER keys above
             yield {
                 'courseId': thisId,
@@ -440,7 +552,7 @@ def build_rows(thisId, thisCourse, meetings_list, members_list, allRecords):
             }
 
 
-def process_course(client, thisId, sessionBuffer):
+def process_course(client, thisId, sessionBuffer, minimal=False, recordsOnly=False):
     """Fetches everything for one course. Returns (course, meetings, members, records)
     or None when the course should be skipped."""
     if client.auth.is_token_nearly_expired(sessionBuffer):
@@ -450,11 +562,14 @@ def process_course(client, thisId, sessionBuffer):
     logging.debug(f'---------------------------------')
     logging.debug(f'{thisId} > Start this course')
 
-    # Look up course or skip if not found.
-    thisCourse = fetch_course(client, thisId)
-    if not thisCourse:
-        logging.info(f'{thisId} > No course found.')
-        return None
+    # Look up course or skip if not found. Minimal mode reads the course pk1 off
+    # the meetings response instead, so it skips this request entirely.
+    thisCourse = None
+    if not minimal:
+        thisCourse = fetch_course(client, thisId)
+        if not thisCourse:
+            logging.info(f'{thisId} > No course found.')
+            return None
 
     # Fetch a list of meetings or skip if none
     meetings_list = fetch_meetings(client, thisId)
@@ -463,26 +578,34 @@ def process_course(client, thisId, sessionBuffer):
         logging.info(f'{thisId} | No meetings.')
         return None
 
-    # Fetch a list of members (students) or skip if none
-    members_list = fetch_members(client, thisId)
-    memberCount = len(members_list)
-    if memberCount == 0:
-        logging.info(f'{thisId} | No members.')
-        return None
+    if minimal:
+        # Every meeting carries its parent course pk1
+        thisCourse = {'id': meetings_list[0]['courseId']}
 
-    # Fetch attendance records for all meetings
-    allRecords = []
-    for meeting in meetings_list:
-        """Itterate over each meeting in the course."""
-        #We use the course id value in the _12345_1 format here. See note in fetch_records
-        allRecords.extend(fetch_records(client, meeting['courseId'], str(meeting['id'])))
+    # Fetch a list of members (students) or skip if none. records-only needs no
+    # membership list because it never emits a Null row.
+    members_list = []
+    if not recordsOnly:
+        members_list = fetch_members(client, thisId, minimal)
+        memberCount = len(members_list)
+        if memberCount == 0:
+            logging.info(f'{thisId} | No members.')
+            return None
+    else:
+        memberCount = 0
+
+    # Fetch attendance records along whichever axis costs fewer requests
+    allRecords = fetch_all_records(client, thisCourse['id'], meetings_list, members_list)
 
     recordCount = len(allRecords)
     if recordCount == 0:
         logging.info(f'{thisId} | No attendance records.')
     else:
         logging.debug(f'allRecords:{allRecords}')
-        logging.info(f'{thisId} | {memberCount} students, {meetingCount} meetings, and {recordCount} attendance records.')
+        if recordsOnly:
+            logging.info(f'{thisId} | {meetingCount} meetings and {recordCount} attendance records.')
+        else:
+            logging.info(f'{thisId} | {memberCount} students, {meetingCount} meetings, and {recordCount} attendance records.')
 
     return thisCourse, meetings_list, members_list, allRecords
 
@@ -504,10 +627,16 @@ def main():
     HOST = config_data['HOST']
     RESULTLIMIT = config_data['RESULTLIMIT']
     SESSIONBUFFER = config_data['SESSIONBUFFER']
+    MINIMAL = config_data['MINIMAL']
+    RECORDSONLY = config_data['RECORDSONLY']
 
     os.makedirs(batchId)
     setup_logging(batchId)
     logging.info(f'Starting Batch Attendance ID = ' + batchId)
+    if RECORDSONLY:
+        logging.info('Mode: records-only. No status=Null rows, reduced columns.')
+    elif MINIMAL:
+        logging.info('Mode: minimal. Reduced columns, pk1 values only.')
 
     # Authenticate
     thisAuth = Authenticator(HOST, KEY, SECRET)
@@ -521,7 +650,8 @@ def main():
 
     # start processing courses from the list
     with open(inFile) as inputFile, open(outFile, 'w', newline='') as outputFile:
-        outputWriter = csv.DictWriter(outputFile, delimiter='|', fieldnames=HEADER)
+        outputWriter = csv.DictWriter(outputFile, delimiter='|',
+                                      fieldnames=MINIMAL_HEADER if MINIMAL else HEADER)
         outputWriter.writeheader()
 
         for line in inputFile:
@@ -530,14 +660,18 @@ def main():
             if not thisId:
                 continue
 
-            result = process_course(client, thisId, SESSIONBUFFER)
+            result = process_course(client, thisId, SESSIONBUFFER, MINIMAL, RECORDSONLY)
             if not result:
                 continue
             thisCourse, meetings_list, members_list, allRecords = result
 
             # Combine data and write to outFile
-            for attendanceRow in build_rows(thisId, thisCourse, meetings_list,
-                                            members_list, allRecords):
+            if RECORDSONLY:
+                rows = build_record_rows(thisId, thisCourse['id'], meetings_list, allRecords)
+            else:
+                rows = build_rows(thisId, thisCourse, meetings_list,
+                                  members_list, allRecords, MINIMAL)
+            for attendanceRow in rows:
                 outputWriter.writerow(attendanceRow)
                 rowCounter += 1
 

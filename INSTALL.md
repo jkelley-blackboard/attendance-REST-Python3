@@ -217,6 +217,28 @@ The output file is pipe (`|`) delimited. A row is written for every
 student/meeting pair; where a meeting exists but the student has no attendance
 record, `status` is written as `Null`.
 
+### Export modes
+
+| Mode | Command | Columns | Rows |
+|---|---|---|---|
+| Full (default) | `batch_attendance3.py list.csv` | 18 | every student x meeting, `Null` where no record |
+| Minimal | `batch_attendance3.py list.csv --minimal` | 8 | same rows, pk1 values only |
+| Records only | `batch_attendance3.py list.csv --records-only` | 8 | only records that exist, no `Null` rows |
+
+`--minimal` drops names, usernames and child course detail, keeping only pk1
+identifiers. It skips the course lookup and the child course lookups, and asks
+Learn for a much smaller membership payload.
+
+`--records-only` additionally skips the membership request, so the export
+contains only attendance that was actually taken. Use it when you are loading
+into something that already knows the roster. It implies `--minimal`.
+
+Request counts are dominated by the attendance fetch itself, so these modes
+save roughly 1-5% of requests on a typical course - they mainly reduce payload
+size and output width. The script automatically fetches records per student
+instead of per meeting when that costs fewer requests, which matters most for
+courses with many meetings and few students.
+
 ### Reading the console output
 
 A healthy run looks like this:

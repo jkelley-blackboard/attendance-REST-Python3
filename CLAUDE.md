@@ -109,6 +109,17 @@ Endpoints in use (see https://developer.blackboard.com/portal/displayApi):
 - A meeting with no attendance record for an enrolled student is written with
   `status` = `Null`. That's intentional, not a gap.
 - `CheckRates` is called at start and end to report daily quota consumption.
+- `fetch_all_records` picks the cheaper axis per course: per meeting costs
+  `meetings * ceil(students/limit)`, per student costs
+  `students * ceil(meetings/limit)`. Both endpoints return the same
+  `AttendanceRecord` shape, so callers can't tell which was used.
+- Request counts are dominated by the attendance fetch (~94% on a typical
+  course). Trimming fields saves payload, not requests — don't expect
+  `--minimal` to cut the quota meaningfully.
+- `/meetings/downloadUrl` looks like a bulk escape hatch but is not usable: it
+  returns a legacy `/webapps/` servlet URL that 404s with a REST bearer token.
+- A 1000-course batch of typical lectures is ~64,000 requests against a
+  10,000/day quota. There is no resume support yet.
 
 Config is read before the batch folder is created, so a bad invocation reports
 an error without leaving an empty timestamped folder behind.
